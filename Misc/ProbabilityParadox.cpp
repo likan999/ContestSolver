@@ -1,4 +1,7 @@
+#include <omp.h>
+
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -106,84 +109,62 @@ class Fraction {
   uint32_t denominator_;
 };
 
-template <typename Value>
-class IntMap {
- private:
-  vector<pair<int, Value>> keyValuePairs_;
-  unique_ptr<int[]> keyToIndex_;
-  int bufSize_ = 0;
-
- public:
-  void init(int maxSize) {
-    if (keyToIndex_ && bufSize_ < maxSize) {
-      keyToIndex_.reset();
-    }
-    if (!keyToIndex_) {
-      bufSize_ = max(bufSize_ * 2, maxSize);
-      keyToIndex_.reset(new int[bufSize_]);
-    }
-    keyValuePairs_.clear();
-  }
-
-  bool put(int key, const Value& value) {
-    if (key < 0 || key >= bufSize_) {
-      throw out_of_range("Key out of range.");
-    }
-    int pos = keyToIndex_[key];
-    if (pos >= 0 && pos < static_cast<int>(keyValuePairs_.size()) && keyValuePairs_[pos].first == key) {
-      return false;
-    }
-    keyToIndex_[key] = keyValuePairs_.size();
-    keyValuePairs_.emplace_back(key, value);
-    return true;
-  }
-
-  bool lookup(int key, Value* value) const {
-    if (key < 0 || key >= bufSize_) {
-      throw out_of_range("Key out of range.");
-    }
-    int pos = keyToIndex_[key];
-    if (pos >= 0 && pos < static_cast<int>(keyValuePairs_.size())) {
-      const auto& keyValuePair = keyValuePairs_[pos];
-      if (keyValuePair.first == key) {
-        *value = keyValuePair.second;
-        return true;
-      }
-    }
-    return false;
-  }
-
-  int size() const {
-    return keyValuePairs_.size();
-  }
-
-  auto begin() const -> decltype(this->keyValuePairs_.begin()) {
-    return keyValuePairs_.begin();
-  }
-
-  auto end() const -> decltype(this->keyValuePairs_.end()) {
-    return keyValuePairs_.end();
-  }
-};
-
 int sizeOfPattern(int pattern) {
   return sizeof(unsigned int) * 8 - 1 - __builtin_clz(pattern);
 }
 
+template <typename Value>
+bool put(vector<pair<int, Value>>& kvp, int* index, int key, const Value& value) {
+  int pos = index[key];
+  if (pos >= 0 && pos < static_cast<int>(kvp.size()) && kvp[pos].first == key) {
+    return false;
+  }
+  index[key] = kvp.size();
+  kvp.emplace_back(key, value);
+  return true;
+}
+
+template <typename Value>
+bool lookup(const vector<pair<int, Value>>& kvp, const int* index, int key, Value* value) {
+  int pos = index[key];
+  if (pos >= 0 && pos < static_cast<int>(kvp.size())) {
+    const auto& kv = kvp[pos];
+    if (kv.first == key) {
+      *value = kv.second;
+      return true;
+    }
+  }
+  return false;
+}
+
 thread_local vector<vector<pair<int, Fraction>>> coefficients;
 thread_local vector<pair<int, Fraction>> merged;
-thread_local IntMap<int> patternToIndex;
+thread_local vector<pair<int, int>> patternToIndex;
+thread_local int* buf = nullptr;
+thread_local ptrdiff_t size;
+thread_local struct BufferReturner { ~BufferReturner() { return_temporary_buffer(buf); } } BufferReturner;
 
 Fraction compute(int patternA, int patternB) {
   if (patternA == patternB) {
     return Fraction(1, 2);
   }
   int n = sizeOfPattern(patternA);
-  patternToIndex.init(2 << n);
-  patternToIndex.put(1, 1);
+  int expectedBufferSize = 2 << n;
+  patternToIndex.clear();
+  if (buf != nullptr && size < expectedBufferSize) {
+    return_temporary_buffer(buf);
+    buf = nullptr;
+  }
+  if (buf == nullptr) {
+    tie(buf, size) = get_temporary_buffer<int>(expectedBufferSize);
+    if (size < expectedBufferSize) {
+      throw bad_alloc();
+    }
+  }
+  put(patternToIndex, buf, 1, 1);
   for (int i = n - 1; i > 0; i--) {
-    patternToIndex.put(patternA >> i, static_cast<int>(patternToIndex.size() + 1));
-    patternToIndex.put(patternB >> i, static_cast<int>(patternToIndex.size() + 1));
+    put(patternToIndex, buf, patternA >> i, static_cast<int>(patternToIndex.size() + 1));
+    put(patternToIndex, buf, patternB >> i, static_cast<int>(patternToIndex.size() + 1));
   }
   int m = patternToIndex.size();
   if (coefficients.size() < static_cast<size_t>(m + 1)) {
@@ -201,7 +182,7 @@ Fraction compute(int patternA, int patternB) {
         int size = sizeOfPattern(newPattern);
         for (int i = size; i >= 0; i--) {
           int index;
-          if (patternToIndex.lookup((newPattern & ((1 << i) - 1)) | (1 << i), &index)) {
+          if (lookup(patternToIndex, buf, (newPattern & ((1 << i) - 1)) | (1 << i), &index)) {
             coeff.emplace_back(index, Fraction(1, 2));
             break;
           }

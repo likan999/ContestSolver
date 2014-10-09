@@ -1,54 +1,47 @@
 #include <algorithm>
-#include <iostream>
-#include <limits>
-#include <list>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <sstream>
 #include <stdexcept>
-#include <tuple>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 using namespace std;
 
 class Fraction {
  public:
-  Fraction(int n = 0) : Fraction(n < 0, abs(n), 1) {}
+  Fraction(uint32_t n = 0) : Fraction(n, 1, false) {}
 
-  Fraction(int n, int d) {
+  Fraction(uint32_t n, uint32_t d) {
     if (d == 0) {
       throw invalid_argument("Denominator is zero");
     }
-    negative_ = (n != 0) && ((n >= 0) ^ (d >= 0));
-    tie(numerator_, denominator_) = normalize(abs(n), abs(d));
+    tie(numerator_, denominator_) = normalize(n, d);
   }
 
   Fraction(const Fraction&) = default;
   Fraction& operator=(const Fraction&) = default;
 
   friend Fraction operator+(const Fraction& a, const Fraction& b) {
-    if (a.negative_ == b.negative_) {
-      auto p = add(a.numerator_, a.denominator_, b.numerator_, b.denominator_);
-      return Fraction(a.negative_, p.first, p.second);
-    } else {
-      auto p = subtract(a.numerator_, a.denominator_, b.numerator_, b.denominator_);
-      return Fraction(a.negative_ ^ get<2>(p), get<0>(p), get<1>(p));
-    }
+    auto p = normalize(add(mul(a.numerator_, b.denominator_), mul(b.numerator_, a.denominator_)), mul(a.denominator_, b.denominator_));
+    return Fraction(safe_cast<uint32_t>(p.first), safe_cast<uint32_t>(p.second), false);
   }
 
   friend Fraction operator-(const Fraction& a, const Fraction& b) {
-    if (a.negative_ == b.negative_) {
-      auto p = subtract(a.numerator_, a.denominator_, b.numerator_, b.denominator_);
-      return Fraction(a.negative_ ^ get<2>(p), get<0>(p), get<1>(p));
-    } else {
-      auto p = add(a.numerator_, a.denominator_, b.numerator_, b.denominator_);
-      return Fraction(a.negative_, p.first, p.second);
+    uint64_t p = mul(a.numerator_, b.denominator_);
+    uint64_t q = mul(b.numerator_, a.denominator_);
+    if (p < q) {
+      throw range_error("Negative result when doing subtraction");
     }
+    auto r = normalize(p - q, mul(a.denominator_, b.denominator_));
+    return Fraction(safe_cast<uint32_t>(r.first), safe_cast<uint32_t>(r.second), false);
   }
 
   friend Fraction operator*(const Fraction& a, const Fraction& b) {
     auto p = normalize(mul(a.numerator_, b.numerator_), mul(a.denominator_, b.denominator_));
-    return Fraction(a.negative_ ^ b.negative_, safe_cast<uint32_t>(p.first), safe_cast<uint32_t>(p.second));
+    return Fraction(safe_cast<uint32_t>(p.first), safe_cast<uint32_t>(p.second), false);
   }
 
   friend Fraction operator/(const Fraction& a, const Fraction& b) {
@@ -56,11 +49,11 @@ class Fraction {
       throw invalid_argument("Divide by zero");
     }
     auto p = normalize(mul(a.numerator_, b.denominator_), mul(a.denominator_, b.numerator_));
-    return Fraction(a.negative_ ^ b.negative_, safe_cast<uint32_t>(p.first), safe_cast<uint32_t>(p.second));
+    return Fraction(safe_cast<uint32_t>(p.first), safe_cast<uint32_t>(p.second), false);
   }
 
   friend bool operator==(const Fraction& a, const Fraction& b) {
-    return a.negative_ == b.negative_ && a.numerator_ == b.numerator_ && a.denominator_ == b.denominator_;
+    return a.numerator_ == b.numerator_ && a.denominator_ == b.denominator_;
   }
 
   friend bool operator!=(const Fraction& a, const Fraction& b) {
@@ -68,9 +61,6 @@ class Fraction {
   }
 
   friend ostream& operator<<(ostream& os, const Fraction& f) {
-    if (f.negative_) {
-      os << '-';
-    }
     os << f.numerator_;
     if (f.numerator_ != 0 && f.denominator_ != 1) {
       os << '/' << f.denominator_;
@@ -79,7 +69,7 @@ class Fraction {
   }
 
  private:
-  Fraction(bool negative, uint32_t n, uint32_t d) : negative_(n != 0 && negative), numerator_(n), denominator_(d) {
+  Fraction(uint32_t n, uint32_t d, bool /*dummy*/) : numerator_(n), denominator_(d) {
   }
 
   template <typename U, typename T>
@@ -102,57 +92,107 @@ class Fraction {
   template <typename T>
   static T add(T a, T b) {
     if (numeric_limits<T>::max() - a < b) {
-      throw overflow_error("Overflows when doing addition");
+      throw overflow_error("Overflow when doing addition");
     }
     return a + b;
-  }
-
-  template <typename T>
-  static pair<T, bool> subtract(T a, T b) {
-    bool negative = a < b;
-    return { negative ? b - a : a - b, negative };
   }
 
   static uint64_t mul(uint32_t a, uint32_t b) {
     return static_cast<uint64_t>(a) * static_cast<uint64_t>(b);
   }
 
-  static pair<uint32_t, uint32_t> add(uint32_t n1, uint32_t d1, uint32_t n2, uint32_t d2) {
-    auto p = normalize(add(mul(n1, d2), mul(n2, d1)), mul(d1, d2));
-    return { safe_cast<uint32_t>(p.first), safe_cast<uint32_t>(p.second) };
-  }
-
-  static tuple<uint32_t, uint32_t, bool> subtract(uint32_t n1, uint32_t d1, uint32_t n2, uint32_t d2) {
-    uint64_t a = mul(n1, d2);
-    uint64_t b = mul(n2, d1);
-    auto p = subtract(a, b);
-    auto q = normalize(p.first, mul(d1, d2));
-    return make_tuple(safe_cast<uint32_t>(q.first), safe_cast<uint32_t>(q.second), p.second);
-  }
-
  private:
-  bool negative_;
   uint32_t numerator_;
   uint32_t denominator_;
+};
+
+template <typename Value>
+class IntMap {
+ private:
+  vector<pair<int, Value>> keyValuePairs_;
+  unique_ptr<int[]> keyToIndex_;
+  int bufSize_ = 0;
+
+ public:
+  void init(int maxSize) {
+    if (keyToIndex_ && bufSize_ < maxSize) {
+      keyToIndex_.reset();
+    }
+    if (!keyToIndex_) {
+      bufSize_ = max(bufSize_ * 2, maxSize);
+      keyToIndex_.reset(new int[bufSize_]);
+    }
+    keyValuePairs_.clear();
+  }
+
+  bool put(int key, const Value& value) {
+    if (key < 0 || key >= bufSize_) {
+      throw out_of_range("Key out of range.");
+    }
+    int pos = keyToIndex_[key];
+    if (pos >= 0 && pos < static_cast<int>(keyValuePairs_.size()) && keyValuePairs_[pos].first == key) {
+      return false;
+    }
+    keyToIndex_[key] = keyValuePairs_.size();
+    keyValuePairs_.emplace_back(key, value);
+    return true;
+  }
+
+  bool lookup(int key, Value* value) const {
+    if (key < 0 || key >= bufSize_) {
+      throw out_of_range("Key out of range.");
+    }
+    int pos = keyToIndex_[key];
+    if (pos >= 0 && pos < static_cast<int>(keyValuePairs_.size())) {
+      const auto& keyValuePair = keyValuePairs_[pos];
+      if (keyValuePair.first == key) {
+        *value = keyValuePair.second;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  int size() const {
+    return keyValuePairs_.size();
+  }
+
+  auto begin() const -> decltype(this->keyValuePairs_.begin()) {
+    return keyValuePairs_.begin();
+  }
+
+  auto end() const -> decltype(this->keyValuePairs_.end()) {
+    return keyValuePairs_.end();
+  }
 };
 
 int sizeOfPattern(int pattern) {
   return sizeof(unsigned int) * 8 - 1 - __builtin_clz(pattern);
 }
 
+thread_local vector<vector<pair<int, Fraction>>> coefficients;
+thread_local vector<pair<int, Fraction>> merged;
+thread_local IntMap<int> patternToIndex;
+
 Fraction compute(int patternA, int patternB) {
+  if (patternA == patternB) {
+    return Fraction(1, 2);
+  }
   int n = sizeOfPattern(patternA);
-  unordered_map<int, int> patternToIndex;
-  patternToIndex[1] = 1;
+  patternToIndex.init(2 << n);
+  patternToIndex.put(1, 1);
   for (int i = n - 1; i > 0; i--) {
-    patternToIndex.emplace(patternA >> i, patternToIndex.size() + 1);
-    patternToIndex.emplace(patternB >> i, patternToIndex.size() + 1);
+    patternToIndex.put(patternA >> i, static_cast<int>(patternToIndex.size() + 1));
+    patternToIndex.put(patternB >> i, static_cast<int>(patternToIndex.size() + 1));
   }
   int m = patternToIndex.size();
-  vector<list<pair<int, Fraction>>> coefficients(m + 1);
+  if (coefficients.size() < static_cast<size_t>(m + 1)) {
+    coefficients.resize(m + 1);
+  }
   for (const auto& p : patternToIndex) {
     int pattern = p.first;
     auto& coeff = coefficients[p.second];
+    coeff.clear();
     for (int d = 0; d <= 1; d++) {
       int newPattern = (pattern << 1) + d;
       if (newPattern == patternA) {
@@ -160,15 +200,15 @@ Fraction compute(int patternA, int patternB) {
       } else if (newPattern != patternB) {
         int size = sizeOfPattern(newPattern);
         for (int i = size; i >= 0; i--) {
-          auto q = patternToIndex.find((newPattern & ((1 << i) - 1)) | (1 << i));
-          if (q != patternToIndex.end()) {
-            coeff.emplace_back(q->second, Fraction(1, 2));
+          int index;
+          if (patternToIndex.lookup((newPattern & ((1 << i) - 1)) | (1 << i), &index)) {
+            coeff.emplace_back(index, Fraction(1, 2));
             break;
           }
         }
       }
     }
-    coeff.sort([] (const pair<int, Fraction>& left, const pair<int, Fraction>& right) { return left.first < right.first; });
+    sort(coeff.begin(), coeff.end(), [] (const pair<int, Fraction>& left, const pair<int, Fraction>& right) { return left.first < right.first; });
   }
   for (int i = m; i > 0; i--) {
     auto& coeff = coefficients[i];
@@ -184,23 +224,29 @@ Fraction compute(int patternA, int patternB) {
       if (!c.empty() && c.back().first == i) {
         Fraction ci = c.back().second;
         c.pop_back();
+        merged.clear();
         auto it1 = c.begin();
         auto it2 = coeff.begin();
         while (it1 != c.end() && it2 != coeff.end()) {
           if (it1->first == it2->first) {
-            it1->second = it1->second + ci * it2->second;
+            merged.emplace_back(it1->first, it1->second + ci * it2->second);
             ++it1;
             ++it2;
           } else if (it1->first < it2->first) {
+            merged.emplace_back(*it1);
             ++it1;
           } else {
-            c.emplace(it1, it2->first, ci * it2->second);
+            merged.emplace_back(it2->first, ci * it2->second);
             ++it2;
           }
         }
-        for (; it2 != coeff.end(); ++it2) {
-          c.emplace(it1, it2->first, ci * it2->second);
+        for (; it1 != c.end(); ++it1) {
+          merged.emplace_back(*it1);
         }
+        for (; it2 != coeff.end(); ++it2) {
+          merged.emplace_back(it2->first, ci * it2->second);
+        }
+        swap(c, merged);
       }
     }
   }
@@ -219,14 +265,53 @@ int convert(const string& s) {
   return n;
 }
 
-int main() {
+string convert(int pattern) {
+  int n = sizeOfPattern(pattern);
+  string s;
+  for (int i = n - 1; i >= 0; i--) {
+    s += (pattern & (1 << i)) ? 'T' : 'H';
+  }
+  return s;
+}
+
+int main(int argc, char* argv[]) {
+#ifndef COMPUTE_ALL_PAIRS
   string patternA, patternB;
   while (true) {
     cin >> patternA;
     if (patternA == "$") {
-      break;
+      return 0;
     }
     cin >> patternB;
     cout << compute(convert(patternA), convert(patternB)) << endl;
   }
+#else
+  if (argc != 2) {
+    cerr << "Help: " << argv[0] << " n" << endl;
+    return 1;
+  }
+  int n = atoi(argv[1]);
+  if (n <= 0) {
+    cerr << "n must be positive" << endl;
+    return 1;
+  }
+  int m = 1 << n;
+  for (int i = m; i < 2 * m; i++) {
+    cout << ',' << convert(i);
+  }
+  cout << endl;
+  vector<string> results(m);
+  #pragma omp parallel for schedule(dynamic, 1)
+  for (int i = m; i < 2 * m; i++) {
+    ostringstream oss;
+    oss << convert(i);
+    for (int j = m; j < 2 * m; j++) {
+      oss << ',' << compute(i, j);
+    }
+    results[i - m] = oss.str();
+  }
+  for (int i = 0; i < m; i++) {
+    cout << results[i] << endl;
+  }
+#endif
 }
